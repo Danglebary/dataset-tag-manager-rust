@@ -4,8 +4,7 @@
 	import type { UnlistenFn } from '@tauri-apps/api/event';
 	import { listen } from '@tauri-apps/api/event';
 	import type { Dataset } from '$lib/types';
-	import datasetStore from '$lib/stores/dataset.store';
-	import activeDatasetItemStore from '$lib/stores/active-item.store';
+	import datasetStore, { activeDatasetImageStore } from '$lib/stores/dataset.store';
 
 	let unlisten: UnlistenFn | null = null;
 
@@ -14,8 +13,7 @@
 			console.log(event.payload);
 
 			datasetStore.set(event.payload as Dataset);
-			activeDatasetItemStore.set((event.payload as Dataset).data[0]);
-			console.log($activeDatasetItemStore);
+			activeDatasetImageStore.set((event.payload as Dataset).data[0].name);
 		});
 	});
 
@@ -25,7 +23,7 @@
 
 	function handleDatasetItemClick(idx: number) {
 		if ($datasetStore !== null) {
-			activeDatasetItemStore.set($datasetStore.data[idx]);
+			activeDatasetImageStore.set($datasetStore.data[idx].name);
 		}
 	}
 </script>
@@ -39,8 +37,8 @@
 				<!-- svelte-ignore a11y-no-static-element-interactions -->
 				<div
 					class={`w-full h-40 grid grid-cols-2 justify-start items-start bg-zinc-600 cursor-pointer p-2 ${
-						$activeDatasetItemStore &&
-						$activeDatasetItemStore.name === image.name &&
+						$activeDatasetImageStore &&
+						$activeDatasetImageStore === image.name &&
 						'outline outline-2 outline-blue-400'
 					}`}
 					on:click={() => handleDatasetItemClick(index)}

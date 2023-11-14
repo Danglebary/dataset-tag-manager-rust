@@ -4,6 +4,8 @@ use std::fs::{read_dir, read_to_string, write};
 
 use serde::{ Serialize, Deserialize };
 
+use super::logger::Logger;
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DatasetImage {
     pub name: String,
@@ -21,21 +23,22 @@ pub struct Dataset {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum DatasetErrorType {
-    NameError,
-    PathError,
-    ReadError,
-    WriteError,
-    UnknownError,
+    Name,
+    Path,
+    Read,
+    Write,
+    UnknownRead,
+    ShouldBeImpossible,
 }
 
 #[derive(Debug)]
 pub struct DatasetError {
     pub type_: DatasetErrorType,
-    pub path: String,
+    pub path: Option<String>,
 }
 
 impl DatasetError {
-    pub fn new(type_: DatasetErrorType, path: String) -> DatasetError {
+    pub fn new(type_: DatasetErrorType, path: Option<String>) -> DatasetError {
         DatasetError { type_, path }
     }
 }
@@ -44,40 +47,167 @@ impl Error for DatasetError {}
 
 impl std::fmt::Display for DatasetError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let path = self.path.clone().unwrap_or("".to_string());
         match self.type_ {
-            DatasetErrorType::NameError => {
-                let msg = format!("Error reading name from path '{}'", self.path);
+            DatasetErrorType::Name => {
+                let msg = format!("Error reading name from path '{}'", path);
                 write!(f, "{msg}")
             },
-            DatasetErrorType::PathError => {
-                let msg = format!("Error reading path '{}'", self.path);
+            DatasetErrorType::Path => {
+                let msg = format!("Error reading path '{}'", path);
                 write!(f, "{msg}")
             },
-            DatasetErrorType::ReadError => {
-                let msg = format!("Error reading dataset from path '{}'", self.path);
+            DatasetErrorType::Read => {
+                let msg = format!("Error reading dataset from path '{}'", path);
                 write!(f, "{msg}")
             },
-            DatasetErrorType::WriteError => {
-                let msg = format!("Error writing file to path '{}'", self.path);
+            DatasetErrorType::Write => {
+                let msg = format!("Error writing file to path '{}'", path);
                 write!(f, "{msg}")
             },
-            DatasetErrorType::UnknownError => {
-                let msg = format!("Unknown error occurred while reading dataset from path '{}'", self.path);
+            DatasetErrorType::UnknownRead => {
+                let msg = format!("Unknown error occurred while reading dataset from path '{}'", path);
                 write!(f, "{msg}")
-            }
+            },
+            DatasetErrorType::ShouldBeImpossible => {
+                write!(f, "An error occurred that should be impossible to occur")
+            },
         }
     }
 }
 
 impl Dataset {
+    pub fn save_image_tags(&self) -> Result<Dataset, DatasetError> {
+        for image in &self.data {
+            let mut image_path = Path::new(&image.path).to_path_buf();
+            image_path.set_extension("txt");
+
+            let image_tags = image.tags.join(". ");
+
+            let write_result = write(&image_path, image_tags);
+            match write_result {
+                Ok(_) => {},
+                Err(_) => {
+                    return Err(DatasetError::new(DatasetErrorType::Write, Some(image_path.to_string_lossy().to_string())));
+                }
+            }
+        }
+
+        Ok(self.clone())
+    }
+
+    pub fn delete_image_tag(&self, tag: String, image_name: String) -> Result<Dataset, DatasetError> {
+        let mut dataset_data = self.data.clone();
+
+        let mut image_index = None;
+        for (index, dataset_image) in dataset_data.iter().enumerate() {
+            if dataset_image.name == image_name {
+                image_index = Some(index);
+                break;
+            }
+        }
+
+        if let Some(index) = image_index {
+            let mut image = dataset_data[index].clone();
+
+            let mut tag_index = None;
+            for (index, image_tag) in image.tags.iter().enumerate() {
+                if image_tag == &tag {
+                    tag_index = Some(index);
+                    break;
+                }
+            }
+
+            if let Some(index) = tag_index {
+                match Dataset::write_image_tags_for_file(&mut image) {
+                    Ok(image) => {
+                        // now we can remove the tag from the image in our local state
+                        image.tags.remove(index);
+                    },
+                    Err(err) => {
+                        return Err(err);
+                    }
+                }
+            } else {
+                // We shouldn't possibly be able to get here, but we'll handle it just in case
+                return Err(DatasetError::new(DatasetErrorType::ShouldBeImpossible, None));
+            }
+
+            dataset_data[index] = image;
+        }
+
+        let dataset = Dataset {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            data: dataset_data
+        };
+
+        Ok(dataset)
+    }
+
+    pub fn update_image(&self, image: &mut DatasetImage) -> Result<Dataset, DatasetError> {
+        let mut dataset_data = self.data.clone();
+
+        let mut image_index = None;
+        for (index, dataset_image) in dataset_data.iter().enumerate() {
+            if dataset_image.name == image.name {
+                image_index = Some(index);
+                break;
+            }
+        }
+
+        if let Some(index) = image_index {
+            match Dataset::write_image_tags_for_file(image) {
+                Ok(image) => {
+                    // now we can update our local state
+                    dataset_data[index] = image.clone();
+                },
+                Err(err) => {
+                    return Err(err);
+                }
+            }
+        } else {
+            // We shouldn't possibly be able to get here, but we'll handle it just in case
+            return Err(DatasetError::new(DatasetErrorType::ShouldBeImpossible, None));
+        }
+
+        let dataset = Dataset {
+            name: self.name.clone(),
+            path: self.path.clone(),
+            data: dataset_data
+        };
+
+        Logger::info(&format!("updated dataset: {:?}", dataset));
+
+        Ok(dataset)
+    }
+
+    pub fn write_image_tags_for_file(image: &mut DatasetImage) -> Result<&mut DatasetImage, DatasetError> {
+        let mut image_path = Path::new(&image.path).to_path_buf();
+        image_path.set_extension("txt");
+
+        let image_tags = image.tags.join(". ");
+
+        let write_result = write(&image_path, image_tags);
+        match write_result {
+            Ok(_) => {},
+            Err(_) => {
+                return Err(DatasetError::new(DatasetErrorType::Write, Some(image_path.to_string_lossy().to_string())));
+            }
+        }
+
+        Ok(image)
+    }
+
+    
     // TODO: custom error types, will allow us to handle showing error dialogs to the user
     pub fn from_path(path: &Path) -> Result<Dataset, DatasetError> {
         let dataset_name = match path.file_name() {
             Some(name) => match name.to_str() {
                 Some(name) => name.to_string(),
-                None => return Err(DatasetError::new(DatasetErrorType::NameError, path.to_string_lossy().to_string()))
+                None => return Err(DatasetError::new(DatasetErrorType::Name, Some(path.to_string_lossy().to_string())))
             },
-            None => return Err(DatasetError::new(DatasetErrorType::NameError, path.to_string_lossy().to_string()))
+            None => return Err(DatasetError::new(DatasetErrorType::Name, Some(path.to_string_lossy().to_string())))
         };
 
         let dataset_path = path.to_string_lossy().to_string();
@@ -94,7 +224,7 @@ impl Dataset {
         let entries = match read_dir(path) {
             Ok(entries) => entries,
             Err(_) => {
-                return Err(DatasetError::new(DatasetErrorType::ReadError, path.to_string_lossy().to_string()));
+                return Err(DatasetError::new(DatasetErrorType::Read, Some(path.to_string_lossy().to_string())));
             }
         };
 
@@ -102,7 +232,7 @@ impl Dataset {
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(_) => {
-                    return Err(DatasetError::new(DatasetErrorType::ReadError, path.to_string_lossy().to_string()));
+                    return Err(DatasetError::new(DatasetErrorType::Read, Some(path.to_string_lossy().to_string())));
                 }
             };
 
@@ -111,11 +241,11 @@ impl Dataset {
                 Some(name) => match name.to_str() {
                     Some(name) => name.to_string(),
                     None => {
-                        return Err(DatasetError::new(DatasetErrorType::NameError, dataimage_path.to_string_lossy().to_string()));
+                        return Err(DatasetError::new(DatasetErrorType::Name, Some(dataimage_path.to_string_lossy().to_string())));
                     }
                 },
                 None => {
-                    return Err(DatasetError::new(DatasetErrorType::NameError, dataimage_path.to_string_lossy().to_string()));
+                    return Err(DatasetError::new(DatasetErrorType::Name, Some(dataimage_path.to_string_lossy().to_string())));
                 }
             };
 
@@ -127,13 +257,13 @@ impl Dataset {
                 // if it does, we want to read the tags from the file
                 // if it does not, we want to create the file and add it to the datasetImage
                 let datatags_data: Vec<String> = match read_to_string(&datatags_path) {
-                    Ok(contents) => contents.split(".").map(|s| s.trim().to_string()).filter(|s| s.len() > 0).collect(),
+                    Ok(contents) => contents.split('.').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
                     Err(_) => {
                         let write_result = write(&datatags_path, "");
                         match write_result {
                             Ok(_) => {},
                             Err(_) => {
-                                return Err(DatasetError::new(DatasetErrorType::WriteError, datatags_path.to_string_lossy().to_string()));
+                                return Err(DatasetError::new(DatasetErrorType::Write, Some(datatags_path.to_string_lossy().to_string())));
                             }
                         }
                         vec!["".to_string()]
@@ -166,17 +296,7 @@ fn is_image_file(path: &Path) -> bool {
                 None => return false
             };
 
-            match ext {
-                "jpg" => true,
-                "jpeg" => true,
-                "png" => true,
-                "gif" => true,
-                "bmp" => true,
-                "tiff" => true,
-                "tif" => true,
-                "webp" => true,
-                _ => false
-            }
+            matches!(ext, "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "tif" | "webp")
         },
         None => false
     }
